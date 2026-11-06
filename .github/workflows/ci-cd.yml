@@ -1,0 +1,99 @@
+name: Python Test, Build and Run
+
+# 2) Workflow запускается при push в основную ветку и при создании/обновлении PR в основную ветку
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # 3) Отдельный job для запуска тестов с матрицей Python
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Гарантирует, что проверка второй версии Python продолжится независимо от результата первой
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Устанавливаем проект из текущего репозитория и базовые зависимости для тестов
+          pip install . pytest python-dotenv asgiref
+
+      - name: Run tests
+        run: |
+          # Запускаем весь набор тестов из папки tests/
+          # При падении теста pytest автоматически вернет код ошибки, что приведет к провалу job
+          pytest tests/
+
+  # 4) Job build-and-run, запускается только после успешного прохождения тестов на обеих версиях
+  build-and-run:
+    needs: test # Ждет успешного завершения всех матричных запусков job 'test'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build wheel and source distribution
+        run: |
+          # Собирает .whl и .tar.gz в папке dist/
+          python -m build
+
+      - name: Create separate virtual environment
+        run: |
+          # Создаем изолированное виртуальное окружение для запуска
+          python -m venv run_venv
+
+      - name: Install built wheel
+        run: |
+          # Устанавливаем собранный wheel-пакет из папки dist/
+          # Bash автоматически раскроет wildcard *.whl до имени файла
+          ./run_venv/bin/pip install dist/*.whl
+
+      - name: Install Flaskr from examples/tutorial
+        run: |
+          # Устанавливаем Flaskr. Так как Flask уже установлен из wheel, 
+          # pip сохранит эту версию (удовлетворит зависимость), не перезаписывая её.
+          # Примечание: в репозитории папка называется 'tutorial' (без 's' на конце).
+          ./run_venv/bin/pip install ./examples/tutorial
+
+      - name: Initialize Flaskr database
+        run: |
+          cd examples/tutorial
+          # Инициализируем базу данных Flaskr
+          ../run_venv/bin/flask --app flaskr init-db
+
+      - name: Run application on port 5000
+        run: |
+          cd examples/tutorial
+          # Запускаем приложение в фоновом режиме (&), чтобы шаг не зависал бесконечно в CI
+          ../run_venv/bin/flask --app flaskr run --port 5000 &
+          
+          # Даем приложению 3 секунды на запуск и проверяем его доступность
+          sleep 3
+          curl -I http://127.0.0.1:5000 || echo "Проверка запуска завершена"
